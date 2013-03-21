@@ -1,0 +1,162 @@
+% download images:
+
+
+function mainGetConnectionData()
+    [structuresData,structuresIDs, structuresNames] = getLocations();
+    exprimentData = cell(length(structuresIDs),1);
+    directory = createDir('.', 'output');
+    saveFile(structuresData, 'structures', directory);
+    
+    for j = 1:length(structuresIDs)
+        [exprimentData{j}, exprimentId] = getListOfSpecimensIDs(structuresIDs(j));
+        structureDir = createDir(directory, structuresNames{j});
+        saveFile(structuresData, structuresNames{j}, structureDir);
+        
+        exprimentData{j}.imagesMetaData = cell(length(exprimentId),1);
+        
+        for i = 1:length(exprimentId);
+            [exprimentData{j}.imagesMetaData{i}, imagesPaths] = getListOfPhotos(exprimentId(i));
+            exprimentDir = createDir(structureDir, num2str(exprimentId(i)));
+            saveFile(exprimentData{j}.imagesMetaData{i}, num2str(exprimentId(i)), exprimentDir);
+            
+            exprimentData{j}.imagesMetaData{i}.imageTilesData = cell(length(imagesPaths),1);
+            for m = 1:length(imagesPaths)
+                [imageID,maxResolution, maxTileX, maxTileY, exprimentData{j}.imagesMetaData{i}.imageTilesData{m}] = getPhotos(imagesPaths{m},exprimentDir);
+                tilesDir = createDir(exprimentDir, imageID);
+                saveFile(exprimentData{j}.imagesMetaData{i}.imageTilesData, imageID, tilesDir);
+                getTiles(imagesPaths{m},maxResolution, maxTileX, maxTileY,tilesDir);
+            end
+        end
+    end
+end
+
+function fullDir = createDir(currentDir, newDir)
+    fullDir = fullfile(currentDir,newDir);
+    if ~exist(fullDir, 'dir')
+        mkdir(fullDir);
+    end
+end
+function saveFile(data, name, directory)
+    fileName = [name, '.mat'];
+    save(fullfile(directory,fileName),'data');
+end
+function [data,structuresIDs, structuresNames] = getLocations()
+    dataToInclude = 'include=structure&only=name,primary_injection_structure_id,structure_id,specimen_id';
+    order = 'sorder=structures.name$asc';
+    
+    locationsURL = sprintf(['http://connectivity.brain-map.org/api/v2/data/Injection/query.json?wrap=true'...
+        '&criteria=specimen(donor(products[id$in5])),structure[id]&%s&%s'],dataToInclude,order);
+    jsonString = urlread(locationsURL);
+    data = parse_json(jsonString);
+    m=1;
+    injectionAreas = data.msg;
+    for i = 1:length(injectionAreas)
+       currentExp = injectionAreas{i};
+       structuresIDs(m) = currentExp.primary_injection_structure_id;
+       structuresNames{m} = currentExp.structure.name;
+       m= m+1;
+    end
+end
+function [data, exprimentId] = getListOfSpecimensIDs(regionID)
+
+%     regionUrl = ['http://connectivity.brain-map.org/api/v2/data/Injection/query.json?wrap=true',...
+%         '&criteria=%5Bprimary_injection_structure_id%24eq726%5D%2Cspecimen(donor(products%5Bid%24eq5%5D))',...
+%         '&include=structure%5Bid%24eq726%5D%2Cspecimen(donor(age)%2Cdata_sets%5Btype%24eqSectionDataSet%5D)',...
+%         '&order=structures.name%2C+data_sets.id&numRows=25'];
+    regionUrl  = sprintf(['http://connectivity.brain-map.org/api/v2/data/Injection/query.json?wrap=true&criteria',...
+        '=[primary_injection_structure_id$eq%d],specimen(donor(products[id$eq5]))&include=structure',...
+        '[id$eq%d],specimen(donor(age),data_sets[type$eqSectionDataSet])&order=structures.name,+data_sets.id&numRows=25'],regionID, regionID);
+      
+    jsonString = urlread(regionUrl);
+    data = parse_json(jsonString);
+    m=1;
+    expriments = data.msg;
+    for i = 1:length(expriments)
+       currentExp = expriments{i};
+       dataSetsInExpriment = currentExp.specimen.data_sets;
+       for j=1:length(dataSetsInExpriment)
+           currentDataSet = dataSetsInExpriment{j};
+           exprimentId(m) =  currentDataSet.id;
+           m= m+1;
+       end
+    end
+    
+end
+
+function [data, imagesPaths] = getListOfPhotos(specimentId)
+    dataToInclude = 'plane_of_section,treatments,specimen(donor(age)),section_images(associates),genes';
+    order = 'sub_images.section_number$desc';
+    photosUrl = sprintf(['http://connectivity.brain-map.org/api/v2/data/SectionDataSet/%d.json?', ...
+          'wrap=true&include=%s&order=%s'], specimentId,dataToInclude,order);
+      
+    jsonString = urlread(photosUrl);
+    data = parse_json(jsonString);
+    m=1;
+    expriments = data.msg;
+    for i = 1:length(expriments)
+       currentExp = expriments{i};
+       imagesInExpriment = currentExp.section_images;
+       for j=1:length(imagesInExpriment)
+           currentImage = imagesInExpriment{j};
+           imagesPaths{m} =  currentImage.path;
+           m= m+1;
+       end
+    end
+    
+end
+
+function getTiles(path, maxResolution, maxTileX, maxTileY,tilesDir)
+    for i=1:maxTileX
+        xIndex = i-1;
+        for j=1:maxTileY
+            yIndex = j-1;
+            tileUrl = sprintf('http://connectivity.brain-map.org/tiles/%s/TileGroup0/%d-%d-%d.jpg?range=0,1500,0,1000,0,4095',path,maxResolution, xIndex, yIndex);
+            fileName = sprintf('%d-%d-%d.jpg',maxResolution, xIndex, yIndex);
+            fileName = fullfile(tilesDir, fileName);
+            urlwrite(tileUrl,fileName);
+            fprintf('.');
+        end
+    end
+    fprintf('\n');
+end
+function [ imageID,maxResolution, maxTileX, maxTileY, data] = getPhotos(path, directory)
+    indexOfLine = regexp(path,'/');
+    imageID = path(indexOfLine(end)+1:end);
+    imageUrl = sprintf('http://connectivity.brain-map.org/tiles/%s/ImageProperties.xml',path);
+    %imageXml = urlread(imageUrl);
+    
+    try
+        imageXml=xmlread(imageUrl);
+        data = parseChildNodes(imageXml);
+        attributes = data.Attributes;
+        for i=1:length(attributes)
+            switch attributes(i).Name
+                case 'HEIGHT'
+                    height = str2double(attributes(i).Value);
+                case 'WIDTH'
+                    width = str2double(attributes(i).Value);
+                case 'NUMTIERS'
+                    numTiers = str2double(attributes(i).Value);
+                case 'TILESIZE'
+                    tileSize = str2double(attributes(i).Value);
+            end
+        end
+    catch exception
+        error('seriesXml:noXml','No data available for image %s while accessing \n%s\n%s ',imageID,imageUrl,exception.message);
+    end
+%     WIDTH="40000" 
+%     HEIGHT="30000" 
+%     NUMTILES="24796" 
+%     NUMTIERS="9" 
+%     NUMIMAGES="1" 
+%     VERSION="1.8" 
+%     TILESIZE="256"
+    
+    maxResolution = numTiers -1;
+    maxTileX = lower(width / tileSize);
+    maxTileY = lower(height / tileSize);
+    %tilesDir = fullfile(directory, imageID);
+    
+    % download photo
+end
+ 
